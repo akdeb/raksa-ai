@@ -100,7 +100,6 @@ export class GeminiLiveModel {
   private session: any = null; 
   
   public onStateChange: (state: ConnectionState) => void = () => {};
-  // Updated signature to include partial text updates
   public onTranscript: (text: string, role: 'user' | 'model', isFinal: boolean) => void = () => {};
   public onToolCall: (name: string, args: any, id: string) => void = () => {};
   public onAudioData: (frequencyData: Uint8Array) => void = () => {}; 
@@ -127,40 +126,32 @@ export class GeminiLiveModel {
         sampleRate: OUTPUT_SAMPLE_RATE,
       });
 
+      if (this.outputContext.state === 'suspended') {
+        await this.outputContext.resume();
+      }
+      this.nextStartTime = this.outputContext.currentTime;
+
       // 3. Connect to Gemini Live
       const sessionPromise = this.ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO],
-          inputAudioTranscription: {}, // Enable transcription
-          outputAudioTranscription: {}, // Enable transcription
+          inputAudioTranscription: {}, 
+          outputAudioTranscription: {},
           systemInstruction: `You are Raksa, an intelligent AI assistant for the Royal Thai Police. 
           Your goal is to assist citizens and tourists at a police station kiosk.
           
-          Core Rules:
-          1. Detect the language spoken by the user (Thai or English) and respond in the same language.
-          2. Be authoritative yet polite, calm, and reassuring.
-          3. If a user reports an emergency (killing, shooting, fire, dying), immediately use the 'dialEmergency' tool.
-          4. If a user wants to file a report, use 'fileComplaint'.
-          5. Keep responses concise and spoken-word friendly. Do not read out long lists.
-          6. If speaking Thai, use polite particles (Khrup/Ka).
-          7. The user can also send you images via the camera. React to them if sent.`,
+          Instructions:
+          - Listen to the user's request.
+          - Detect the language spoken by the user (Thai or English) and respond in the same language.
+          - Be authoritative yet polite, calm, and reassuring.
+          - Keep responses concise and spoken-word friendly.`,
           tools: [{ functionDeclarations: TOOLS }],
         },
         callbacks: {
           onopen: () => {
             this.onStateChange(ConnectionState.CONNECTED);
-            
-            // Send initial text prompt to trigger greeting
-            sessionPromise.then(session => {
-              session.send({
-                clientContent: {
-                  turns: [{ role: 'user', parts: [{ text: "Hello, I am at the kiosk. Please greet me as Raksa." }] }],
-                  turnComplete: true
-                }
-              });
-            });
-
+            // Immediately start listening when connected
             this.startAudioStreaming(sessionPromise);
           },
           onmessage: (msg: LiveServerMessage) => this.handleMessage(msg, sessionPromise),
@@ -209,6 +200,7 @@ export class GeminiLiveModel {
 
       const pcmBlob = createPcmBlob(inputData);
       
+      // Send audio chunk
       sessionPromise.then((session) => {
         session.sendRealtimeInput({ media: pcmBlob });
       });
@@ -238,7 +230,7 @@ export class GeminiLiveModel {
 
     // Handle Turn Complete (finalize transcript)
     if (message.serverContent?.turnComplete) {
-       this.onTranscript('', 'model', true); // Signal that turn is done if needed, or just let the text flow
+       this.onTranscript('', 'model', true);
     }
 
     // 3. Handle Tool Calls
@@ -264,8 +256,19 @@ export class GeminiLiveModel {
 
     try {
       const bytes = decodeBase64(base64Audio);
-      
       const dataInt16 = new Int16Array(bytes.buffer);
+
+      // --- Visualizer: Process output audio for visual feedback ---
+      let sum = 0;
+      for (let i = 0; i < dataInt16.length; i += 50) {
+        sum += Math.abs(dataInt16[i]);
+      }
+      const avg = sum / (dataInt16.length / 50);
+      const normalized = Math.min(255, (avg / 10000) * 255); 
+      const visualData = new Uint8Array(64).fill(normalized);
+      this.onAudioData(visualData);
+      // -----------------------------------------------------------
+
       const buffer = this.outputContext.createBuffer(1, dataInt16.length, OUTPUT_SAMPLE_RATE);
       const channelData = buffer.getChannelData(0);
       
@@ -292,8 +295,7 @@ export class GeminiLiveModel {
     this.onStateChange(ConnectionState.DISCONNECTED);
     
     if (this.session) {
-      const s = await this.session;
-      // No explicit close
+      await this.session; // Wait for promise to settle if needed, but we don't need to close it explicitly as per API design
     }
 
     if (this.mediaStream) {

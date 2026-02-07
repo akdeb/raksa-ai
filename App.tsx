@@ -18,6 +18,16 @@ const RaksaApp = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<GeminiLiveModel | null>(null);
 
+  // Helper to stop camera and cleanup tracks
+  const stopCamera = () => {
+    setShowCamera(false);
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+      videoRef.current.srcObject = null;
+    }
+  };
+
   // Initialize Model
   useEffect(() => {
     modelRef.current = new GeminiLiveModel();
@@ -25,8 +35,7 @@ const RaksaApp = () => {
     modelRef.current.onStateChange = (state) => {
       setConnectionState(state);
       if (state === ConnectionState.DISCONNECTED) {
-        // Optional: clear messages on disconnect, or keep them as history
-        // setMessages([]); 
+        stopCamera();
       }
     };
 
@@ -64,8 +73,6 @@ const RaksaApp = () => {
            }
         } else {
            // Append to existing turn
-           // Check if we need to filter out duplicate text or just append
-           // For Gemini Live, usually we just append chunks
            history[history.length - 1] = {
              ...lastMsg,
              text: lastMsg.text + text
@@ -99,12 +106,7 @@ const RaksaApp = () => {
 
   const handleCameraToggle = async () => {
     if (showCamera) {
-      setShowCamera(false);
-      if (videoRef.current && videoRef.current.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream;
-        stream.getTracks().forEach(track => track.stop());
-        videoRef.current.srcObject = null;
-      }
+      stopCamera();
     } else {
       setShowCamera(true);
       try {
@@ -175,10 +177,21 @@ const RaksaApp = () => {
             
             <div className="flex-1"></div> {/* Spacer to push content down */}
             
-            {/* Default Greeting if empty */}
+            {/* Listening State / Empty State */}
             {isConnected && messages.length === 0 && (
-              <div className="text-center text-gray-400 text-sm my-auto self-center">
-                Listening...
+              <div className="flex flex-col items-center justify-center h-full space-y-6 my-auto animate-in fade-in duration-500">
+                 <div className="relative">
+                   <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center animate-pulse">
+                      <svg className="w-8 h-8 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                      </svg>
+                   </div>
+                   <div className="absolute inset-0 border-4 border-red-100 rounded-full animate-ping opacity-20"></div>
+                 </div>
+                 <div className="text-center">
+                   <h2 className="text-xl font-semibold text-gray-900">Raksa is listening</h2>
+                   <p className="text-gray-500 mt-2">Please speak clearly to start.</p>
+                 </div>
               </div>
             )}
 
@@ -189,6 +202,11 @@ const RaksaApp = () => {
                   key={msg.id} 
                   className={`max-w-[80%] ${msg.role === 'user' ? 'self-end' : 'self-start'}`}
                 >
+                  {/* Role Label */}
+                  <div className={`text-xs mb-1 ml-1 ${msg.role === 'user' ? 'text-right text-gray-400' : 'text-left text-gray-500'}`}>
+                    {msg.role === 'user' ? 'You' : 'Raksa'}
+                  </div>
+                  
                   <div className={`px-5 py-3 rounded-2xl text-[17px] leading-relaxed shadow-sm ${
                     msg.role === 'user' 
                       ? 'bg-[#007AFF] text-white rounded-tr-md' 
