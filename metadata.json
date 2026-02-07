@@ -1,0 +1,9 @@
+{
+  "name": "Raksa AI",
+  "description": "An AI-powered voice assistant for Thai Police stations serving citizens and tourists.",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation",
+    "camera"
+  ]
+}
