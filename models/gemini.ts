@@ -105,7 +105,10 @@ export class GeminiLiveModel {
   public onAudioData: (frequencyData: Uint8Array) => void = () => {}; 
 
   constructor() {
-    this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const apiKey =
+      import.meta.env.VITE_GEMINI_API_KEY ||
+      import.meta.env.GEMINI_API_KEY;
+    this.ai = new GoogleGenAI({ apiKey });
   }
 
   async connect() {
