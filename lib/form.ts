@@ -1,5 +1,7 @@
 import type { IntakeFormState, FormGroup } from '../types';
 
+const STORAGE_KEY = 'raksa_intake_form';
+
 export function createDefaultForm(): IntakeFormState {
   const groups: FormGroup[] = [
     {
@@ -31,10 +33,11 @@ export function createDefaultForm(): IntakeFormState {
   ];
 
   return {
-    step: 'personal',
-    activeFieldId: groups[0].fields[0].id,
+    step: 'photo',
+    activeFieldId: null,
     groups,
     receiptCode: null,
+    userPhoto: null,
   };
 }
 
@@ -64,4 +67,42 @@ export function findNextField(
 
 export function allFieldsConfirmed(form: IntakeFormState): boolean {
   return form.groups.every((g) => g.fields.every((f) => f.status === 'confirmed'));
+}
+
+// ─── LocalStorage persistence ───
+
+export function saveFormToStorage(form: IntakeFormState): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(form));
+  } catch {
+    // quota exceeded or SSR — ignore
+  }
+}
+
+export function loadFormFromStorage(): IntakeFormState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as IntakeFormState;
+  } catch {
+    return null;
+  }
+}
+
+export function clearFormStorage(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Returns true when a saved form exists AND is not fully completed (no receipt).
+ */
+export function hasSavedInProgressForm(): boolean {
+  const saved = loadFormFromStorage();
+  if (!saved) return false;
+  // If the receipt was already generated, the form is done
+  return saved.receiptCode === null;
 }

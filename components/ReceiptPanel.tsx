@@ -55,8 +55,18 @@ const ReceiptPanel: React.FC<ReceiptPanelProps> = ({ form, onReset }) => {
           <p className="text-sm text-gray-400 mt-1">All fields have been confirmed.</p>
         </div>
 
-        {/* Receipt code */}
+        {/* User photo + Receipt code */}
         <div className="bg-gray-50 rounded-xl p-4 text-center mb-6">
+          {form.userPhoto && (
+            <div className="flex justify-center mb-3">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`data:image/jpeg;base64,${form.userPhoto}`}
+                alt="User"
+                className="w-16 h-16 rounded-full object-cover border-2 border-white shadow"
+              />
+            </div>
+          )}
           <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Reference Code</p>
           <p className="text-2xl font-mono font-bold tracking-widest text-gray-900">{code}</p>
           <p className="text-sm text-gray-500 mt-2">{fullName}</p>

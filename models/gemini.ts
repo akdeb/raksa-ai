@@ -110,6 +110,7 @@ export class GeminiLiveModel {
   private nextStartTime = 0;
   private session: any = null;
   private speechEndTime: number | null = null;
+  private isConnected = false;
   
   public onStateChange: (state: ConnectionState) => void = () => {};
   public onTranscript: (text: string, role: 'user' | 'model', isFinal: boolean) => void = () => {};
@@ -171,12 +172,18 @@ Your job is to fill out a police report form by interviewing the person in front
 
 WORKFLOW:
 1. Greet the person warmly and tell them you will help them file a report.
-2. You MUST ask for each field ONE AT A TIME, in order.
-3. When the user answers, call the "update_field" tool with the value and source="speech".
-4. Read back what you understood and ask the user to confirm. For example: "I heard your name is John Smith. Is that correct?"
-5. When the user confirms (says yes / correct / right), call the "confirm_field" tool.
-6. Then move to the NEXT unconfirmed field.
-7. If the user sends an image and you can extract info from it, call "update_field" with source="image" for each field you can read.
+2. Ask for the CURRENT field being collected.
+3. When the user answers, call "update_field" for EVERY piece of information you can extract — even if it belongs to a later field. For example if the user says "My name is John, I'm 30, male, from the USA", you MUST call update_field four times (full_name, age, gender, nationality).
+4. After calling update_field, read back the value of the FIRST unconfirmed field and ask the user to confirm.
+5. When the user confirms (says yes / correct / right / okay), call "confirm_field".
+6. Then IMMEDIATELY move to the NEXT unconfirmed field. If that field already has a value (because you pre-filled it), read it back and ask for confirmation.
+7. If the user sends an image, call "update_field" with source="image" for every field you can infer from the image.
+8. When you receive a system message like "[USER_ACTION] Field X confirmed via UI", that means the user clicked the green check button on the form. You MUST call "confirm_field" for that field and move on to the next unconfirmed field WITHOUT re-asking.
+
+PHOTO STEP:
+- The very first thing you receive may be a photo of the user.
+- Analyze the photo and call "update_field" with source="image" for any personal details you can infer: gender, approximate age, etc.
+- Then proceed with the personal details interview, starting with the first unconfirmed field.
 
 PERSONAL DETAILS FIELDS (ask in this order):
 - full_name (Full Name)
@@ -205,20 +212,29 @@ RULES:
 - Be polite, calm, and reassuring.
 - Keep responses concise and spoken-word friendly.
 - ALWAYS use the tools to update and confirm fields. Never skip the tool calls.
-- If a user gives multiple pieces of info at once, call update_field for EACH field separately.
-- If the user corrects a value, call update_field again with the new value, then ask for confirmation again.`,
+- If a user gives multiple pieces of info at once, call update_field for EACH field separately in one batch.
+- If a field is already filled from a previous answer, just read it back and ask for confirmation — don't re-ask.
+- If the user corrects a value, call update_field again with the new value, then ask for confirmation again.
+- When you receive a [USER_ACTION] system message, treat it as an authoritative confirmation and move on.`,
           tools: [{ functionDeclarations: TOOLS }],
         },
         callbacks: {
           onopen: () => {
+            this.isConnected = true;
             this.onStateChange(ConnectionState.CONNECTED);
             // Immediately start listening when connected
             this.startAudioStreaming(sessionPromise);
           },
           onmessage: (msg: LiveServerMessage) => this.handleMessage(msg, sessionPromise),
-          onclose: () => this.onStateChange(ConnectionState.DISCONNECTED),
+          onclose: () => {
+            this.isConnected = false;
+            this.cleanupAudio();
+            this.onStateChange(ConnectionState.DISCONNECTED);
+          },
           onerror: (err) => {
             console.error('Gemini Live Error:', err);
+            this.isConnected = false;
+            this.cleanupAudio();
             this.onStateChange(ConnectionState.ERROR);
           },
         },
@@ -234,22 +250,26 @@ RULES:
 
   // Method to send image data
   public sendImage(base64Data: string, mimeType: string = 'image/jpeg') {
-    if (this.session) {
-      this.session.then((s: any) => {
+    if (!this.session || !this.isConnected) return;
+    this.session.then((s: any) => {
+      if (!this.isConnected) return;
+      try {
         s.sendRealtimeInput({
-          media: {
-            mimeType,
-            data: base64Data
-          }
+          media: { mimeType, data: base64Data },
         });
-      });
-    }
+      } catch {
+        // WebSocket may be closed
+      }
+    });
   }
 
   private startAudioStreaming(sessionPromise: Promise<any>) {
     if (!this.processor || !this.source || !this.inputContext) return;
 
     this.processor.onaudioprocess = (e) => {
+      // Guard: don't send audio if the WebSocket is closed
+      if (!this.isConnected) return;
+
       const inputData = e.inputBuffer.getChannelData(0);
       
       // Simple visualizer data
@@ -263,7 +283,11 @@ RULES:
       
       // Send audio chunk
       sessionPromise.then((session) => {
-        session.sendRealtimeInput({ media: pcmBlob });
+        try {
+          session.sendRealtimeInput({ media: pcmBlob });
+        } catch {
+          // WebSocket may be closed, ignore
+        }
       });
     };
 
@@ -367,22 +391,18 @@ RULES:
     }
   }
 
-  async disconnect() {
-    this.onStateChange(ConnectionState.DISCONNECTED);
-    
-    if (this.session) {
-      await this.session; // Wait for promise to settle if needed, but we don't need to close it explicitly as per API design
-    }
-
+  private cleanupAudio() {
     if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach(track => track.stop());
+      this.mediaStream.getTracks().forEach((track) => track.stop());
     }
-    
     if (this.processor) this.processor.disconnect();
     if (this.source) this.source.disconnect();
-    if (this.inputContext) this.inputContext.close();
-    if (this.outputContext) this.outputContext.close();
-    
+    if (this.inputContext) {
+      try { this.inputContext.close(); } catch { /* already closed */ }
+    }
+    if (this.outputContext) {
+      try { this.outputContext.close(); } catch { /* already closed */ }
+    }
     this.mediaStream = null;
     this.processor = null;
     this.source = null;
@@ -391,7 +411,29 @@ RULES:
     this.nextStartTime = 0;
   }
 
-  public sendText(_text: string) {
-    // Gemini live model is voice-first; text input is not supported here.
+  async disconnect() {
+    this.isConnected = false;
+    this.cleanupAudio();
+    this.onStateChange(ConnectionState.DISCONNECTED);
+
+    if (this.session) {
+      try { await this.session; } catch { /* ignore */ }
+    }
+    this.session = null;
+  }
+
+  public sendText(text: string) {
+    if (!this.session || !this.isConnected) return;
+    this.session.then((session: any) => {
+      if (!this.isConnected) return;
+      try {
+        session.sendClientContent({
+          turns: [{ role: 'user', parts: [{ text }] }],
+          turnComplete: true,
+        });
+      } catch {
+        // WebSocket may be closed
+      }
+    });
   }
 }

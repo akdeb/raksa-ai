@@ -50,11 +50,12 @@ export interface FormGroup {
   fields: FormField[];
 }
 
-export type IntakeStep = 'personal' | 'incident' | 'receipt';
+export type IntakeStep = 'photo' | 'personal' | 'incident' | 'receipt';
 
 export interface IntakeFormState {
   step: IntakeStep;
   activeFieldId: string | null;
   groups: FormGroup[];
   receiptCode: string | null;
+  userPhoto: string | null; // base64 jpeg
 }
