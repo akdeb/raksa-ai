@@ -137,8 +137,12 @@ export class GeminiLiveModel {
     return this.ai;
   }
 
-  async connect() {
+  async connect(lang: 'th' | 'en' = 'th') {
     this.onStateChange(ConnectionState.CONNECTING);
+
+    const langInstruction = lang === 'th'
+      ? 'You MUST speak Thai (ภาษาไทย) at all times. Only switch to English if the user clearly speaks English first.'
+      : 'You MUST speak English at all times. Only switch to Thai if the user clearly speaks Thai first.';
 
     try {
       // 1. Setup Audio Input
@@ -167,18 +171,20 @@ export class GeminiLiveModel {
           responseModalities: [Modality.AUDIO],
           inputAudioTranscription: {}, 
           outputAudioTranscription: {},
-          systemInstruction: `You are Raksa, an intelligent AI assistant for the Royal Thai Police intake desk.
+          systemInstruction: `You are Raksa (รักษา), an intelligent AI assistant for the Royal Thai Police intake desk.
 Your job is to fill out a police report form by interviewing the person in front of you.
+
+LANGUAGE: ${langInstruction}
 
 WORKFLOW:
 1. Greet the person warmly and tell them you will help them file a report.
 2. Ask for the CURRENT field being collected.
 3. When the user answers, call "update_field" for EVERY piece of information you can extract — even if it belongs to a later field. For example if the user says "My name is John, I'm 30, male, from the USA", you MUST call update_field four times (full_name, age, gender, nationality).
 4. After calling update_field, read back the value of the FIRST unconfirmed field and ask the user to confirm.
-5. When the user confirms (says yes / correct / right / okay), call "confirm_field".
+5. When the user confirms (says yes / correct / right / okay / ครับ / ค่ะ / ใช่), call "confirm_field".
 6. Then IMMEDIATELY move to the NEXT unconfirmed field. If that field already has a value (because you pre-filled it), read it back and ask for confirmation.
 7. If the user sends an image, call "update_field" with source="image" for every field you can infer from the image.
-8. When you receive a system message like "[USER_ACTION] Field X confirmed via UI", that means the user clicked the green check button on the form. You MUST call "confirm_field" for that field and move on to the next unconfirmed field WITHOUT re-asking.
+8. When you receive a system message like "[USER_ACTION] Field X confirmed via UI", that means the user clicked the confirm button on the form. You MUST call "confirm_field" for that field and move on to the next unconfirmed field WITHOUT re-asking.
 
 PHOTO STEP:
 - The very first thing you receive may be a photo of the user.
@@ -186,29 +192,29 @@ PHOTO STEP:
 - Then proceed with the personal details interview, starting with the first unconfirmed field.
 
 PERSONAL DETAILS FIELDS (ask in this order):
-- full_name (Full Name)
-- date_of_birth (Date of Birth)
-- age (Age)
-- gender (Gender)
-- nationality (Nationality)
-- phone (Phone Number)
-- address (Address)
+- full_name (ชื่อ-นามสกุล / Full Name)
+- date_of_birth (วันเกิด / Date of Birth)
+- age (อายุ / Age)
+- gender (เพศ / Gender)
+- nationality (สัญชาติ / Nationality)
+- phone (หมายเลขโทรศัพท์ / Phone Number)
+- address (ที่อยู่ / Address)
 
 After ALL personal details are confirmed, call "next_step" with step="incident" and announce you're moving to incident details.
 
 INCIDENT DETAILS FIELDS (ask in this order):
-- incident_type (Type of Incident)
-- incident_description (What Happened)
-- incident_date (When It Happened)
-- incident_location (Location)
-- incident_victims (Who Was Affected)
-- incident_suspects (Suspect Description)
-- incident_evidence (Evidence / Notes)
+- incident_type (ประเภทเหตุการณ์ / Type of Incident)
+- incident_description (รายละเอียด / What Happened)
+- incident_date (วันเวลาเกิดเหตุ / When It Happened)
+- incident_location (สถานที่ / Location)
+- incident_victims (ผู้เสียหาย / Who Was Affected)
+- incident_suspects (ลักษณะผู้ต้องสงสัย / Suspect Description)
+- incident_evidence (หลักฐาน / Evidence / Notes)
 
 After ALL incident details are confirmed, call "next_step" with step="receipt" and tell the user the report is complete.
 
 RULES:
-- Detect the language spoken (Thai or English) and respond in the same language.
+- ${langInstruction}
 - Be polite, calm, and reassuring.
 - Keep responses concise and spoken-word friendly.
 - ALWAYS use the tools to update and confirm fields. Never skip the tool calls.
@@ -295,13 +301,20 @@ RULES:
     this.processor.connect(this.inputContext.destination);
   }
 
+  /** Strip Gemini control tokens like <ctrl46>, <shift>, etc. from transcript text */
+  private sanitizeTranscript(text: string): string {
+    // Remove <ctrlNN>, <shift>, <altNN>, and similar internal audio tokens
+    return text.replace(/<ctrl\d+>|<shift>|<alt\d+>|<[A-Za-z]+\d*>/g, '').trim();
+  }
+
   private async handleMessage(message: LiveServerMessage, sessionPromise: Promise<any>) {
     // Latency: mark when user turn ends (turnComplete after user speech)
     // Gemini signals end-of-user-speech via inputTranscription followed by model audio
-    const inputTranscript = message.serverContent?.inputTranscription?.text;
-    if (inputTranscript) {
+    const rawInputTranscript = message.serverContent?.inputTranscription?.text;
+    if (rawInputTranscript) {
        this.speechEndTime = performance.now();
-       this.onTranscript(inputTranscript, 'user', false);
+       const cleaned = this.sanitizeTranscript(rawInputTranscript);
+       if (cleaned) this.onTranscript(cleaned, 'user', false);
     }
 
     // 1. Handle Audio Output
@@ -317,9 +330,10 @@ RULES:
     }
 
     // 2. Handle Transcription
-    const outputTranscript = message.serverContent?.outputTranscription?.text;
-    if (outputTranscript) {
-       this.onTranscript(outputTranscript, 'model', false);
+    const rawOutputTranscript = message.serverContent?.outputTranscription?.text;
+    if (rawOutputTranscript) {
+       const cleaned = this.sanitizeTranscript(rawOutputTranscript);
+       if (cleaned) this.onTranscript(cleaned, 'model', false);
     }
 
     // Handle Turn Complete (finalize transcript)

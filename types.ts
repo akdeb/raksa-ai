@@ -51,6 +51,7 @@ export interface FormGroup {
 }
 
 export type IntakeStep = 'photo' | 'personal' | 'incident' | 'receipt';
+export type AppLang = 'th' | 'en';
 
 export interface IntakeFormState {
   step: IntakeStep;
@@ -58,4 +59,5 @@ export interface IntakeFormState {
   groups: FormGroup[];
   receiptCode: string | null;
   userPhoto: string | null; // base64 jpeg
+  lang: AppLang;
 }

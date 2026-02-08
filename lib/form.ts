@@ -38,6 +38,7 @@ export function createDefaultForm(): IntakeFormState {
     groups,
     receiptCode: null,
     userPhoto: null,
+    lang: 'th',
   };
 }
 
