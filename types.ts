@@ -18,7 +18,7 @@ export interface ChatMessage {
 
 export interface ToolExecution {
   name: string;
-  args: Record<string, any>;
+  args: Record<string, unknown>;
   id: string;
   status: 'pending' | 'completed' | 'failed';
 }
@@ -27,4 +27,34 @@ export interface PoliceStation {
   name: string;
   distance: string;
   isOpen: boolean;
+}
+
+// ─── Form Schema ───
+
+export type FieldStatus =
+  | 'unanswered'
+  | 'inferred_from_speech'
+  | 'inferred_from_image'
+  | 'confirmed';
+
+export interface FormField {
+  id: string;
+  label: string;
+  value: string;
+  status: FieldStatus;
+}
+
+export interface FormGroup {
+  id: string;
+  label: string;
+  fields: FormField[];
+}
+
+export type IntakeStep = 'personal' | 'incident' | 'receipt';
+
+export interface IntakeFormState {
+  step: IntakeStep;
+  activeFieldId: string | null;
+  groups: FormGroup[];
+  receiptCode: string | null;
 }

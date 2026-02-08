@@ -41,6 +41,7 @@ export class GrokLiveModel {
   private source: MediaStreamAudioSourceNode | null = null;
   private nextStartTime = 0;
   private isSessionConfigured = false;
+  private speechEndTime: number | null = null;
 
   public onStateChange: (state: ConnectionState) => void = () => {};
   public onTranscript: (text: string, role: 'user' | 'model', isFinal: boolean) => void = () => {};
@@ -195,8 +196,19 @@ Be authoritative yet polite, calm, and reassuring. Keep responses concise.`,
       this.startAudioCapture();
     }
 
+    // Latency: mark end of user speech
+    if (type === 'input_audio_buffer.speech_stopped') {
+      this.speechEndTime = performance.now();
+    }
+
     // 3. Audio output from Grok
     if (type === 'response.output_audio.delta' && msg.delta && this.outputContext) {
+      // Latency: first audio delta after speech ended = response latency
+      if (this.speechEndTime !== null) {
+        const latencyMs = performance.now() - this.speechEndTime;
+        console.log(`[grok] Response latency: ${latencyMs.toFixed(0)}ms`);
+        this.speechEndTime = null;
+      }
       this.playAudioChunk(msg.delta as string);
     }
 

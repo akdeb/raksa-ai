@@ -5,53 +5,64 @@ import { ConnectionState } from '../types';
 const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
 
-// Tool Definitions
+// Tool Definitions – intake form tools
 const TOOLS: FunctionDeclaration[] = [
   {
-    name: 'dialEmergency',
-    description: 'Call emergency services (191) immediately if the user is in danger or reports a crime in progress.',
+    name: 'update_field',
+    description:
+      'Update a form field with a value inferred from the user\'s speech or an image they sent. ' +
+      'Call this whenever you learn or infer a value for ANY form field. ' +
+      'You MUST call this for every piece of information the user gives you.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        reason: { type: Type.STRING, description: 'The reason for the emergency call' },
-        location: { type: Type.STRING, description: 'Current location of the user if provided' }
+        field_id: {
+          type: Type.STRING,
+          description:
+            'The unique field identifier. One of: full_name, date_of_birth, age, gender, nationality, phone, address, ' +
+            'incident_type, incident_description, incident_date, incident_location, incident_victims, incident_suspects, incident_evidence',
+        },
+        value: { type: Type.STRING, description: 'The value to set for this field' },
+        source: {
+          type: Type.STRING,
+          description: 'How the value was obtained: "speech" or "image"',
+        },
       },
-      required: ['reason']
-    }
+      required: ['field_id', 'value', 'source'],
+    },
   },
   {
-    name: 'fileComplaint',
-    description: 'Start the process of filing a non-emergency police complaint or report. Ask for category and details.',
+    name: 'confirm_field',
+    description:
+      'Mark a field as confirmed by the user. Call this ONLY after the user has explicitly agreed ' +
+      'that the value is correct (e.g. they said "yes", "correct", "that\'s right").',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        category: { type: Type.STRING, description: 'Category of complaint: theft, assault, fraud, traffic, lost_property' },
-        details: { type: Type.STRING, description: 'Key details provided by the user' }
+        field_id: {
+          type: Type.STRING,
+          description: 'The field identifier to confirm',
+        },
       },
-      required: ['category']
-    }
+      required: ['field_id'],
+    },
   },
   {
-    name: 'checkReportStatus',
-    description: 'Check the status of a previously filed police report.',
+    name: 'next_step',
+    description:
+      'Move the form to the next section. Call this when ALL fields in the current section are confirmed. ' +
+      'Steps are: personal -> incident -> receipt.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        reportId: { type: Type.STRING, description: 'The report ID if known' }
-      }
-    }
+        step: {
+          type: Type.STRING,
+          description: 'The step to move to: "incident" or "receipt"',
+        },
+      },
+      required: ['step'],
+    },
   },
-  {
-    name: 'bookAppointment',
-    description: 'Book an appointment with an officer.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        department: { type: Type.STRING, description: 'Department to visit' },
-        time: { type: Type.STRING, description: 'Preferred time' }
-      }
-    }
-  }
 ];
 
 // Helper for PCM blob creation
@@ -97,7 +108,8 @@ export class GeminiLiveModel {
   private processor: ScriptProcessorNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private nextStartTime = 0;
-  private session: any = null; 
+  private session: any = null;
+  private speechEndTime: number | null = null;
   
   public onStateChange: (state: ConnectionState) => void = () => {};
   public onTranscript: (text: string, role: 'user' | 'model', isFinal: boolean) => void = () => {};
@@ -154,14 +166,47 @@ export class GeminiLiveModel {
           responseModalities: [Modality.AUDIO],
           inputAudioTranscription: {}, 
           outputAudioTranscription: {},
-          systemInstruction: `You are Raksa, an intelligent AI assistant for the Royal Thai Police. 
-          Your goal is to assist citizens and tourists at a police station kiosk.
-          
-          Instructions:
-          - Listen to the user's request.
-          - Detect the language spoken by the user (Thai or English) and respond in the same language.
-          - Be authoritative yet polite, calm, and reassuring.
-          - Keep responses concise and spoken-word friendly.`,
+          systemInstruction: `You are Raksa, an intelligent AI assistant for the Royal Thai Police intake desk.
+Your job is to fill out a police report form by interviewing the person in front of you.
+
+WORKFLOW:
+1. Greet the person warmly and tell them you will help them file a report.
+2. You MUST ask for each field ONE AT A TIME, in order.
+3. When the user answers, call the "update_field" tool with the value and source="speech".
+4. Read back what you understood and ask the user to confirm. For example: "I heard your name is John Smith. Is that correct?"
+5. When the user confirms (says yes / correct / right), call the "confirm_field" tool.
+6. Then move to the NEXT unconfirmed field.
+7. If the user sends an image and you can extract info from it, call "update_field" with source="image" for each field you can read.
+
+PERSONAL DETAILS FIELDS (ask in this order):
+- full_name (Full Name)
+- date_of_birth (Date of Birth)
+- age (Age)
+- gender (Gender)
+- nationality (Nationality)
+- phone (Phone Number)
+- address (Address)
+
+After ALL personal details are confirmed, call "next_step" with step="incident" and announce you're moving to incident details.
+
+INCIDENT DETAILS FIELDS (ask in this order):
+- incident_type (Type of Incident)
+- incident_description (What Happened)
+- incident_date (When It Happened)
+- incident_location (Location)
+- incident_victims (Who Was Affected)
+- incident_suspects (Suspect Description)
+- incident_evidence (Evidence / Notes)
+
+After ALL incident details are confirmed, call "next_step" with step="receipt" and tell the user the report is complete.
+
+RULES:
+- Detect the language spoken (Thai or English) and respond in the same language.
+- Be polite, calm, and reassuring.
+- Keep responses concise and spoken-word friendly.
+- ALWAYS use the tools to update and confirm fields. Never skip the tool calls.
+- If a user gives multiple pieces of info at once, call update_field for EACH field separately.
+- If the user corrects a value, call update_field again with the new value, then ask for confirmation again.`,
           tools: [{ functionDeclarations: TOOLS }],
         },
         callbacks: {
@@ -227,9 +272,23 @@ export class GeminiLiveModel {
   }
 
   private async handleMessage(message: LiveServerMessage, sessionPromise: Promise<any>) {
+    // Latency: mark when user turn ends (turnComplete after user speech)
+    // Gemini signals end-of-user-speech via inputTranscription followed by model audio
+    const inputTranscript = message.serverContent?.inputTranscription?.text;
+    if (inputTranscript) {
+       this.speechEndTime = performance.now();
+       this.onTranscript(inputTranscript, 'user', false);
+    }
+
     // 1. Handle Audio Output
     const audioData = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
     if (audioData && this.outputContext) {
+      // Latency: first audio chunk after user speech = response latency
+      if (this.speechEndTime !== null) {
+        const latencyMs = performance.now() - this.speechEndTime;
+        console.log(`[gemini] Response latency: ${latencyMs.toFixed(0)}ms`);
+        this.speechEndTime = null;
+      }
       this.playAudioChunk(audioData);
     }
 
@@ -237,11 +296,6 @@ export class GeminiLiveModel {
     const outputTranscript = message.serverContent?.outputTranscription?.text;
     if (outputTranscript) {
        this.onTranscript(outputTranscript, 'model', false);
-    }
-    
-    const inputTranscript = message.serverContent?.inputTranscription?.text;
-    if (inputTranscript) {
-       this.onTranscript(inputTranscript, 'user', false);
     }
 
     // Handle Turn Complete (finalize transcript)
@@ -252,15 +306,21 @@ export class GeminiLiveModel {
     // 3. Handle Tool Calls
     if (message.toolCall?.functionCalls) {
       for (const call of message.toolCall.functionCalls) {
-        this.onToolCall(call.name ?? '', call.args ?? {}, call.id ?? '');
-        
-        sessionPromise.then(session => {
+        const name = call.name ?? '';
+        const args = call.args ?? {};
+        const id = call.id ?? '';
+
+        // Notify the app (App.tsx handles form state updates)
+        this.onToolCall(name, args, id);
+
+        // Send success response back to Gemini so it continues
+        sessionPromise.then((session) => {
           session.sendToolResponse({
             functionResponses: {
               id: call.id,
               name: call.name,
-              response: { result: "Success" } // In a real app, this would be the actual API result
-            }
+              response: { result: 'ok' },
+            },
           });
         });
       }
