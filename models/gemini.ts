@@ -90,7 +90,7 @@ function decodeBase64(base64: string): Uint8Array {
 }
 
 export class GeminiLiveModel {
-  private ai: GoogleGenAI;
+  private ai: GoogleGenAI | null = null;
   private inputContext: AudioContext | null = null;
   private outputContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
@@ -104,11 +104,24 @@ export class GeminiLiveModel {
   public onToolCall: (name: string, args: any, id: string) => void = () => {};
   public onAudioData: (frequencyData: Uint8Array) => void = () => {}; 
 
-  constructor() {
-    const apiKey =
-      import.meta.env.VITE_GEMINI_API_KEY ||
-      import.meta.env.GEMINI_API_KEY;
-    this.ai = new GoogleGenAI({ apiKey });
+  constructor() {}
+
+  private getApiKey() {
+    return (
+      process.env.NEXT_PUBLIC_GEMINI_API_KEY ||
+      process.env.GEMINI_API_KEY
+    );
+  }
+
+  private getClient() {
+    if (!this.ai) {
+      const apiKey = this.getApiKey();
+      if (!apiKey) {
+        throw new Error('Missing Gemini API key.');
+      }
+      this.ai = new GoogleGenAI({ apiKey });
+    }
+    return this.ai;
   }
 
   async connect() {
@@ -135,7 +148,7 @@ export class GeminiLiveModel {
       this.nextStartTime = this.outputContext.currentTime;
 
       // 3. Connect to Gemini Live
-      const sessionPromise = this.ai.live.connect({
+      const sessionPromise = this.getClient().live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO],
@@ -237,9 +250,9 @@ export class GeminiLiveModel {
     }
 
     // 3. Handle Tool Calls
-    if (message.toolCall) {
+    if (message.toolCall?.functionCalls) {
       for (const call of message.toolCall.functionCalls) {
-        this.onToolCall(call.name, call.args, call.id);
+        this.onToolCall(call.name ?? '', call.args ?? {}, call.id ?? '');
         
         sessionPromise.then(session => {
           session.sendToolResponse({
@@ -316,5 +329,9 @@ export class GeminiLiveModel {
     this.inputContext = null;
     this.outputContext = null;
     this.nextStartTime = 0;
+  }
+
+  public sendText(_text: string) {
+    // Gemini live model is voice-first; text input is not supported here.
   }
 }

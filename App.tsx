@@ -1,14 +1,18 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { GeminiLiveModel } from './models/gemini';
+import { GrokLiveModel } from './models/grok';
 import { ConnectionState, ToolExecution, ChatMessage } from './types';
 import WaveVisualizer from './components/WaveVisualizer';
 import ToolCard from './components/ToolCard';
+import { ToggleGroup, ToggleGroupItem } from './components/ui/toggle-group';
+import { Button } from './components/ui/button';
 
 const RaksaApp = () => {
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
   const [activeTool, setActiveTool] = useState<ToolExecution | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [showCamera, setShowCamera] = useState(false);
+  const [modelChoice, setModelChoice] = useState<'gemini' | 'grok'>('gemini');
   
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -16,7 +20,8 @@ const RaksaApp = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const modelRef = useRef<GeminiLiveModel | null>(null);
+  const modelRef = useRef<GeminiLiveModel | GrokLiveModel | null>(null);
+  const connectInFlightRef = useRef(false);
 
   // Helper to stop camera and cleanup tracks
   const stopCamera = () => {
@@ -30,23 +35,24 @@ const RaksaApp = () => {
 
   // Initialize Model
   useEffect(() => {
-    modelRef.current = new GeminiLiveModel();
+    const model = modelChoice === 'grok' ? new GrokLiveModel() : new GeminiLiveModel();
+    modelRef.current = model;
 
-    modelRef.current.onStateChange = (state) => {
+    model.onStateChange = (state) => {
       setConnectionState(state);
       if (state === ConnectionState.DISCONNECTED) {
         stopCamera();
       }
     };
 
-    modelRef.current.onToolCall = (name, args, id) => {
+    model.onToolCall = (name: string, args: Record<string, unknown>, id: string) => {
       setActiveTool({ name, args, id, status: 'pending' });
       if (name !== 'dialEmergency') {
         setTimeout(() => setActiveTool(null), 5000);
       }
     };
 
-    modelRef.current.onAudioData = (data) => {
+    model.onAudioData = (data) => {
       let sum = 0;
       for (let i = 0; i < data.length; i++) {
         sum += data[i];
@@ -55,7 +61,7 @@ const RaksaApp = () => {
       setAudioLevel(avg / 255);
     };
 
-    modelRef.current.onTranscript = (text, role, isFinal) => {
+    model.onTranscript = (text: string, role: 'user' | 'model', isFinal: boolean) => {
       setMessages(prev => {
         const history = [...prev];
         const lastMsg = history[history.length - 1];
@@ -83,11 +89,10 @@ const RaksaApp = () => {
     };
 
     return () => {
-      if (modelRef.current) {
-        modelRef.current.disconnect();
-      }
+      model.disconnect();
+      modelRef.current = null;
     };
-  }, []);
+  }, [modelChoice]);
 
   // Auto-scroll
   useEffect(() => {
@@ -96,11 +101,19 @@ const RaksaApp = () => {
 
   const toggleConnection = async () => {
     if (!modelRef.current) return;
+    if (connectInFlightRef.current) return;
     if (connectionState === ConnectionState.CONNECTED || connectionState === ConnectionState.CONNECTING) {
+      connectInFlightRef.current = true;
       await modelRef.current.disconnect();
+      connectInFlightRef.current = false;
     } else {
+      connectInFlightRef.current = true;
       setMessages([]); // Clear history for new session
-      await modelRef.current.connect();
+      try {
+        await modelRef.current.connect();
+      } finally {
+        connectInFlightRef.current = false;
+      }
     }
   };
 
@@ -115,7 +128,7 @@ const RaksaApp = () => {
           videoRef.current.srcObject = stream;
         }
       } catch (e) {
-        console.error("Camera access denied", e);
+        console.error("Camera access denied:", e);
         setShowCamera(false);
       }
     }
@@ -134,6 +147,7 @@ const RaksaApp = () => {
   };
 
   const isConnected = connectionState === ConnectionState.CONNECTED;
+  const isSwitchDisabled = connectionState === ConnectionState.CONNECTED || connectionState === ConnectionState.CONNECTING;
 
   return (
     <div className="h-full w-full bg-white flex flex-col font-sans text-black overflow-hidden relative">
@@ -142,6 +156,37 @@ const RaksaApp = () => {
       <div className={`absolute top-0 left-0 right-0 p-6 z-10 text-center transition-opacity duration-300 ${isConnected ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
         <h1 className="text-2xl font-semibold tracking-tight">Raksa AI</h1>
         <p className="text-gray-500 text-sm mt-1">Police Station Assistant</p>
+      </div>
+
+      {/* Model Toggle */}
+      <div className="absolute top-6 right-6 z-[60] flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={async () => {
+            if (!modelRef.current || !('sendText' in modelRef.current)) return;
+            if (connectionState === ConnectionState.DISCONNECTED) {
+              await toggleConnection();
+              setTimeout(() => modelRef.current?.sendText('Hello'), 600);
+              return;
+            }
+            modelRef.current.sendText('Hello');
+          }}
+        >
+          Test Voice
+        </Button>
+        <ToggleGroup
+          type="single"
+          value={modelChoice}
+          onValueChange={(value) => {
+            if (value) setModelChoice(value as 'gemini' | 'grok');
+          }}
+          disabled={isSwitchDisabled}
+          className={isSwitchDisabled ? 'opacity-60 cursor-not-allowed' : ''}
+        >
+          <ToggleGroupItem value="gemini">Gemini</ToggleGroupItem>
+          <ToggleGroupItem value="grok">Grok</ToggleGroupItem>
+        </ToggleGroup>
       </div>
 
       {/* Main Content Area */}
@@ -158,10 +203,10 @@ const RaksaApp = () => {
         </div>
 
         {/* Start Button (Centered) - Added z-50 to ensure clickability */}
-        <div className={`absolute inset-0 flex items-center justify-center z-50 transition-all duration-500 ${isConnected ? 'opacity-0 translate-y-20 pointer-events-none' : 'opacity-100 translate-y-0'}`}>
+        <div className={`absolute inset-0 flex items-center justify-center z-50 transition-all duration-500 ${isConnected ? 'opacity-0 translate-y-20 pointer-events-none' : 'opacity-100 translate-y-0 pointer-events-none'}`}>
           <button 
             onClick={toggleConnection}
-            className="w-32 h-32 bg-black rounded-full shadow-2xl flex items-center justify-center text-white hover:scale-105 active:scale-95 transition-transform"
+            className="w-32 h-32 bg-black rounded-full shadow-2xl flex items-center justify-center text-white hover:scale-105 active:scale-95 transition-transform pointer-events-auto"
           >
             {connectionState === ConnectionState.CONNECTING ? (
               <span className="animate-pulse">Connecting...</span>
