@@ -119,22 +119,28 @@ export class GeminiLiveModel {
 
   constructor() {}
 
-  private getApiKey() {
-    return (
-      process.env.NEXT_PUBLIC_GEMINI_API_KEY ||
-      process.env.GEMINI_API_KEY
-    );
-  }
-
-  private getClient() {
-    if (!this.ai) {
-      const apiKey = this.getApiKey();
-      if (!apiKey) {
-        throw new Error('Missing Gemini API key.');
+  /** Fetch an ephemeral token from our server, falling back to NEXT_PUBLIC_ key */
+  private async getEphemeralToken(): Promise<{ key: string; isEphemeral: boolean }> {
+    try {
+      const res = await fetch('/api/gemini', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.token) {
+          console.log('[gemini] Using ephemeral token');
+          return { key: data.token, isEphemeral: true };
+        }
       }
-      this.ai = new GoogleGenAI({ apiKey });
+      console.warn('[gemini] Ephemeral token endpoint failed, falling back to env key');
+    } catch {
+      console.warn('[gemini] Ephemeral token fetch error, falling back to env key');
     }
-    return this.ai;
+
+    // Fallback: client-side key (less secure, for dev only)
+    const fallback =
+      process.env.NEXT_PUBLIC_GEMINI_API_KEY ||
+      process.env.GEMINI_API_KEY;
+    if (!fallback) throw new Error('No Gemini API key available.');
+    return { key: fallback, isEphemeral: false };
   }
 
   async connect(lang: 'th' | 'en' = 'th') {
@@ -145,6 +151,13 @@ export class GeminiLiveModel {
       : 'You MUST speak English at all times. Only switch to Thai if the user clearly speaks Thai first.';
 
     try {
+      // 0. Get ephemeral token (or fallback key)
+      const { key: apiKey, isEphemeral } = await this.getEphemeralToken();
+      this.ai = new GoogleGenAI({
+        apiKey,
+        ...(isEphemeral ? { httpOptions: { apiVersion: 'v1alpha' } } : {}),
+      });
+
       // 1. Setup Audio Input
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.inputContext = new (window.AudioContext || (window as any).webkitAudioContext)({
@@ -165,7 +178,7 @@ export class GeminiLiveModel {
       this.nextStartTime = this.outputContext.currentTime;
 
       // 3. Connect to Gemini Live
-      const sessionPromise = this.getClient().live.connect({
+      const sessionPromise = this.ai!.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO],

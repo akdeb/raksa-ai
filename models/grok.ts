@@ -52,7 +52,7 @@ export class GrokLiveModel {
    * Fetch an ephemeral token from our Next.js API route
    */
   private async fetchEphemeralToken(): Promise<string> {
-    const res = await fetch('/api/session', { method: 'POST' });
+    const res = await fetch('/api/grok', { method: 'POST' });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Ephemeral token failed (${res.status}): ${body}`);

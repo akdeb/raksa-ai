@@ -26,10 +26,8 @@ export async function POST() {
       );
     }
 
-    // xAI returns { value, expires_at } directly
     const data = await r.json();
 
-    // Return in a normalized shape the client expects
     return NextResponse.json({
       client_secret: {
         value: data.value,
