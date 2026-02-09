@@ -50,13 +50,25 @@ export function generateReceiptCode(): string {
 }
 
 /**
- * Find the next unanswered or unconfirmed field across all groups.
- * Returns null if all fields are confirmed.
+ * Find the next unconfirmed field, prioritizing the current step's group.
+ * Only crosses to the next group if the current group is fully confirmed.
  */
 export function findNextField(
   form: IntakeFormState
 ): { groupId: string; fieldId: string } | null {
+  // 1. Look within the current step's group first
+  const currentGroup = form.groups.find((g) => g.id === form.step);
+  if (currentGroup) {
+    for (const field of currentGroup.fields) {
+      if (field.status !== 'confirmed') {
+        return { groupId: currentGroup.id, fieldId: field.id };
+      }
+    }
+  }
+
+  // 2. Current group fully confirmed — look in subsequent groups
   for (const group of form.groups) {
+    if (group.id === form.step) continue; // already checked
     for (const field of group.fields) {
       if (field.status !== 'confirmed') {
         return { groupId: group.id, fieldId: field.id };
@@ -64,6 +76,24 @@ export function findNextField(
     }
   }
   return null;
+}
+
+/**
+ * Check if all fields in a specific group are confirmed.
+ */
+export function groupFullyConfirmed(form: IntakeFormState, groupId: string): boolean {
+  const group = form.groups.find((g) => g.id === groupId);
+  if (!group) return true;
+  return group.fields.every((f) => f.status === 'confirmed');
+}
+
+/**
+ * Get the names of unconfirmed fields in a group.
+ */
+export function unconfirmedFieldsInGroup(form: IntakeFormState, groupId: string): string[] {
+  const group = form.groups.find((g) => g.id === groupId);
+  if (!group) return [];
+  return group.fields.filter((f) => f.status !== 'confirmed').map((f) => `${f.label} (${f.id})`);
 }
 
 export function allFieldsConfirmed(form: IntakeFormState): boolean {

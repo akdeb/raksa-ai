@@ -14,6 +14,8 @@ import {
   createDefaultForm,
   findNextField,
   generateReceiptCode,
+  groupFullyConfirmed,
+  unconfirmedFieldsInGroup,
   saveFormToStorage,
   loadFormFromStorage,
   clearFormStorage,
@@ -34,6 +36,7 @@ import {
   Mic,
   PhoneOff,
   RotateCcw,
+  X,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────
@@ -52,6 +55,7 @@ const RaksaApp = () => {
   const [sessionStarted, setSessionStarted] = useState(false);
   const [selectedLang, setSelectedLang] = useState<AppLang>('th');
   const [showTranscript, setShowTranscript] = useState(false);
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -105,18 +109,73 @@ const RaksaApp = () => {
           f.id === fieldId ? { ...f, status: 'confirmed' as FieldStatus } : f
         ),
       }));
-      const next = findNextField({ ...prev, groups });
+      const updatedForm = { ...prev, groups };
+      const next = findNextField(updatedForm);
+
+      // If current group is fully confirmed and next field is in a different group,
+      // auto-advance the step
+      let nextStep = prev.step;
+      if (next && next.groupId !== prev.step && groupFullyConfirmed(updatedForm, prev.step)) {
+        nextStep = next.groupId as IntakeStep;
+        console.log(`[form] Auto-advancing step: ${prev.step} → ${nextStep}`);
+      }
+
       return {
-        ...prev,
-        groups,
+        ...updatedForm,
+        step: nextStep,
         activeFieldId: next?.fieldId ?? prev.activeFieldId,
       };
     });
   }, []);
 
-  const moveToStep = useCallback((step: IntakeStep) => {
+  /**
+   * Move to the next step. Returns unconfirmed field names if the current
+   * group isn't fully confirmed (the transition is BLOCKED).
+   */
+  const moveToStep = useCallback((step: IntakeStep): string[] | null => {
+    let blocked: string[] | null = null;
     setForm((prev) => {
+      // Guard: don't allow step transition if current group has unconfirmed fields
+      // (except when moving within the same step or to photo)
+      const currentGroupId = prev.step;
+      if (
+        currentGroupId !== step &&
+        currentGroupId !== 'photo' &&
+        currentGroupId !== 'receipt' &&
+        !groupFullyConfirmed(prev, currentGroupId)
+      ) {
+        const missing = unconfirmedFieldsInGroup(prev, currentGroupId);
+        console.warn(`[form] Blocked step transition → ${step}. Unconfirmed:`, missing);
+        blocked = missing;
+        // Stay on current step, point to first unconfirmed field
+        const nextInGroup = prev.groups
+          .find((g) => g.id === currentGroupId)
+          ?.fields.find((f) => f.status !== 'confirmed');
+        return {
+          ...prev,
+          activeFieldId: nextInGroup?.id ?? prev.activeFieldId,
+        };
+      }
+
       if (step === 'receipt') {
+        // Also guard receipt: ALL groups must be confirmed
+        const allDone = prev.groups.every((g) =>
+          g.fields.every((f) => f.status === 'confirmed')
+        );
+        if (!allDone) {
+          const nextField = findNextField(prev);
+          const missingGroup = prev.groups.find((g) =>
+            g.fields.some((f) => f.status !== 'confirmed')
+          );
+          blocked = missingGroup
+            ? unconfirmedFieldsInGroup(prev, missingGroup.id)
+            : [];
+          return {
+            ...prev,
+            step: missingGroup?.id as IntakeStep ?? prev.step,
+            activeFieldId: nextField?.fieldId ?? prev.activeFieldId,
+          };
+        }
         return {
           ...prev,
           step: 'receipt',
@@ -124,6 +183,7 @@ const RaksaApp = () => {
           receiptCode: generateReceiptCode(),
         };
       }
+
       const group = prev.groups.find((g) => g.id === step);
       return {
         ...prev,
@@ -131,6 +191,7 @@ const RaksaApp = () => {
         activeFieldId: group?.fields[0]?.id ?? null,
       };
     });
+    return blocked;
   }, []);
 
   const handleReset = useCallback(() => {
@@ -213,7 +274,13 @@ const RaksaApp = () => {
       } else if (name === 'confirm_field') {
         confirmField(args.field_id as string);
       } else if (name === 'next_step') {
-        moveToStep(args.step as IntakeStep);
+        const blocked = moveToStep(args.step as IntakeStep);
+        if (blocked && blocked.length > 0 && model) {
+          // Tell the AI it can't move on — fields are still unconfirmed
+          model.sendText(
+            `[SYSTEM] Cannot move to "${args.step}" yet. The following fields in the current section are NOT confirmed: ${blocked.join(', ')}. Please confirm each of these fields first by calling confirm_field for each one before calling next_step again.`
+          );
+        }
       }
     };
 
@@ -420,7 +487,7 @@ const RaksaApp = () => {
         <div className="flex flex-col items-center gap-4">
           <button
             onClick={() => startSession()}
-            className="w-32 h-32 md:w-40 md:h-40 bg-black rounded-full shadow-2xl flex items-center justify-center text-white hover:scale-105 active:scale-95 transition-transform"
+            className="w-32 h-32 md:w-40 md:h-40 bg-red-400 rounded-full shadow-2xl flex items-center justify-center text-white hover:scale-105 active:scale-95 transition-transform"
           >
             <span className="font-semibold text-base md:text-lg">
               {t(selectedLang).startNew}
@@ -609,11 +676,49 @@ const RaksaApp = () => {
 
           {/* End Call */}
           <button
-            onClick={endSession}
+            onClick={() => setShowEndConfirm(true)}
             className="w-10 h-10 bg-red-500 rounded-full flex items-center justify-center text-white hover:bg-red-600 transition-all hover:scale-105 active:scale-95 shadow-lg shadow-red-500/30 mr-1"
           >
             <PhoneOff className="w-5 h-5" />
           </button>
+        </div>
+      )}
+
+      {/* End Call Confirmation */}
+      {showEndConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="relative bg-white rounded-2xl shadow-2xl max-w-xs w-full mx-4 p-6 text-center">
+            <button
+              onClick={() => setShowEndConfirm(false)}
+              className="absolute top-3 right-3 p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="w-14 h-14 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">
+              <PhoneOff className="w-6 h-6 text-red-500" />
+            </div>
+            <h3 className="text-lg font-bold text-gray-900 mb-1">{l.endCallTitle}</h3>
+            <p className="text-sm text-gray-400 mb-6">{l.endCallDesc}</p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowEndConfirm(false)}
+                className="flex-1 py-2.5 px-4 rounded-xl border border-gray-200 text-gray-500 text-sm font-medium hover:bg-gray-50 transition-colors"
+              >
+                {l.cancel}
+              </button>
+              <button
+                onClick={() => {
+                  setShowEndConfirm(false);
+                  handleReset();
+                }}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-red-500 text-white text-sm font-semibold hover:bg-red-600 transition-colors"
+              >
+                {l.endSession}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

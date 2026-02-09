@@ -111,6 +111,7 @@ export class GeminiLiveModel {
   private session: any = null;
   private speechEndTime: number | null = null;
   private isConnected = false;
+  private scheduledSources: AudioBufferSourceNode[] = [];
   
   public onStateChange: (state: ConnectionState) => void = () => {};
   public onTranscript: (text: string, role: 'user' | 'model', isFinal: boolean) => void = () => {};
@@ -213,7 +214,14 @@ PERSONAL DETAILS FIELDS (ask in this order):
 - phone (หมายเลขโทรศัพท์ / Phone Number)
 - address (ที่อยู่ / Address)
 
-After ALL personal details are confirmed, call "next_step" with step="incident" and announce you're moving to incident details.
+CRITICAL RULE — STEP TRANSITIONS:
+- You MUST call "confirm_field" for EVERY field in the current section before calling "next_step".
+- NEVER call "next_step" unless EVERY field in the current section has been confirmed via "confirm_field".
+- NEVER verbally announce moving to the next section unless you have confirmed ALL fields first.
+- If you receive a [SYSTEM] message saying fields are unconfirmed, you MUST go back and confirm them before proceeding.
+- Count your confirm_field calls: Personal Details has 7 fields, Incident Details has 7 fields. ALL must be confirmed.
+
+After ALL 7 personal details are confirmed (every single one must have had confirm_field called), call "next_step" with step="incident" and announce you're moving to incident details.
 
 INCIDENT DETAILS FIELDS (ask in this order):
 - incident_type (ประเภทเหตุการณ์ / Type of Incident)
@@ -224,7 +232,7 @@ INCIDENT DETAILS FIELDS (ask in this order):
 - incident_suspects (ลักษณะผู้ต้องสงสัย / Suspect Description)
 - incident_evidence (หลักฐาน / Evidence / Notes)
 
-After ALL incident details are confirmed, call "next_step" with step="receipt" and tell the user the report is complete.
+After ALL 7 incident details are confirmed, call "next_step" with step="receipt" and tell the user the report is complete.
 
 RULES:
 - ${langInstruction}
@@ -234,7 +242,8 @@ RULES:
 - If a user gives multiple pieces of info at once, call update_field for EACH field separately in one batch.
 - If a field is already filled from a previous answer, just read it back and ask for confirmation — don't re-ask.
 - If the user corrects a value, call update_field again with the new value, then ask for confirmation again.
-- When you receive a [USER_ACTION] system message, treat it as an authoritative confirmation and move on.`,
+- When you receive a [USER_ACTION] system message, treat it as an authoritative confirmation and move on.
+- NEVER skip confirm_field for ANY field. Even if you think it's obvious or trivially correct, you MUST still call confirm_field.`,
           tools: [{ functionDeclarations: TOOLS }],
         },
         callbacks: {
@@ -314,17 +323,36 @@ RULES:
     this.processor.connect(this.inputContext.destination);
   }
 
+  /** Immediately stop all scheduled audio buffers and reset the playback timeline */
+  private flushAudioQueue() {
+    for (const src of this.scheduledSources) {
+      try { src.stop(); } catch { /* already stopped */ }
+      try { src.disconnect(); } catch { /* already disconnected */ }
+    }
+    this.scheduledSources = [];
+    if (this.outputContext) {
+      this.nextStartTime = this.outputContext.currentTime;
+    }
+    console.log('[gemini] Audio queue flushed (interrupted)');
+  }
+
   /** Strip Gemini control tokens like <ctrl46>, <shift>, etc. from transcript text */
   private sanitizeTranscript(text: string): string {
-    // Remove <ctrlNN>, <shift>, <altNN>, and similar internal audio tokens
     return text.replace(/<ctrl\d+>|<shift>|<alt\d+>|<[A-Za-z]+\d*>/g, '').trim();
   }
 
   private async handleMessage(message: LiveServerMessage, sessionPromise: Promise<any>) {
-    // Latency: mark when user turn ends (turnComplete after user speech)
-    // Gemini signals end-of-user-speech via inputTranscription followed by model audio
+    // ─── Handle interruption: user spoke over the model ───
+    if ((message.serverContent as any)?.interrupted) {
+      console.log('[gemini] Model interrupted by user');
+      this.flushAudioQueue();
+    }
+
+    // ─── User speech transcript ───
     const rawInputTranscript = message.serverContent?.inputTranscription?.text;
     if (rawInputTranscript) {
+       // User is speaking → flush any remaining model audio so it doesn't overlap
+       this.flushAudioQueue();
        this.speechEndTime = performance.now();
        const cleaned = this.sanitizeTranscript(rawInputTranscript);
        if (cleaned) this.onTranscript(cleaned, 'user', false);
@@ -412,6 +440,13 @@ RULES:
       
       source.start(startTime);
       this.nextStartTime = startTime + buffer.duration;
+
+      // Track so we can cancel on interruption
+      this.scheduledSources.push(source);
+      source.onended = () => {
+        const idx = this.scheduledSources.indexOf(source);
+        if (idx !== -1) this.scheduledSources.splice(idx, 1);
+      };
       
     } catch (e) {
       console.error('Error playing audio chunk', e);
@@ -419,6 +454,9 @@ RULES:
   }
 
   private cleanupAudio() {
+    // Stop all scheduled audio sources first
+    this.flushAudioQueue();
+
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach((track) => track.stop());
     }

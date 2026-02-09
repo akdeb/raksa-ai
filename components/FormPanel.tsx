@@ -25,9 +25,9 @@ const FormPanel: React.FC<FormPanelProps> = ({ form, onConfirmField, onEditField
   const groupKey = form.step === 'personal' ? 'stepPersonal' : 'stepIncident';
 
   return (
-    <div className="h-full flex flex-col items-center justify-center p-8 overflow-y-auto">
+    <div className="h-full flex flex-col items-center justify-center p-4 md:p-8 overflow-y-auto">
       <div className="w-full max-w-lg mb-8">
-        <h2 className="text-2xl font-bold text-gray-900">{l[groupKey]}</h2>
+        <h2 className="text-xl md:text-2xl font-bold text-gray-900">{l[groupKey]}</h2>
         <p className="text-xs text-gray-400 mt-0.5">{alt[groupKey]}</p>
         <p className="text-sm text-gray-400 mt-2">
           {confirmed} / {total} {l.fieldsConfirmed}
@@ -89,6 +89,7 @@ const statusColor: Record<FieldStatus, string> = {
 const ActiveFieldCard: React.FC<ActiveFieldCardProps> = ({ field, lang, onConfirm, onEdit }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(field.value);
+  const [userEdited, setUserEdited] = useState(false);
   const l = t(lang);
   const alt = t(lang === 'th' ? 'en' : 'th');
   const fKey = fieldLabelKey[field.id];
@@ -105,13 +106,17 @@ const ActiveFieldCard: React.FC<ActiveFieldCardProps> = ({ field, lang, onConfir
   useEffect(() => {
     setDraft(field.value);
     setEditing(false);
+    setUserEdited(false); // Reset when AI updates the field or field changes
   }, [field.value, field.id]);
 
-  const handleSaveEdit = () => { onEdit(draft); setEditing(false); };
+  const handleSaveEdit = () => { onEdit(draft); setEditing(false); setUserEdited(true); };
   const canConfirm = field.value.trim().length > 0 || draft.trim().length > 0;
 
+  // Only pulse when the USER manually edited the field and hasn't confirmed yet
+  const shouldPulse = userEdited && canConfirm && !editing;
+
   return (
-    <div className="w-full max-w-lg rounded-2xl border-2 border-blue-200 bg-white shadow-lg p-6 transition-all">
+    <div className="w-full max-w-lg rounded-2xl border-2 border-blue-200 bg-white shadow-lg p-4 md:p-6 transition-all">
       <div className="flex items-center justify-between mb-1">
         <div>
           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{label}</label>
@@ -142,7 +147,7 @@ const ActiveFieldCard: React.FC<ActiveFieldCardProps> = ({ field, lang, onConfir
         <div
           onClick={() => setEditing(true)}
           className={cn(
-            'text-xl min-h-[40px] flex items-center cursor-text rounded-lg px-3 py-2 -mx-3 mt-2 transition-colors hover:bg-gray-50',
+            'text-lg md:text-xl min-h-[40px] flex items-center cursor-text rounded-lg px-3 py-2 -mx-3 mt-2 transition-colors hover:bg-gray-50',
             field.value ? 'text-gray-900 font-medium' : 'text-gray-300 italic'
           )}
         >
@@ -160,7 +165,7 @@ const ActiveFieldCard: React.FC<ActiveFieldCardProps> = ({ field, lang, onConfir
         </div>
       )}
 
-      <div className="mt-6 flex items-center gap-3">
+      <div className="mt-5 md:mt-6 flex items-center gap-3">
         {!editing && (
           <button
             onClick={() => setEditing(true)}
@@ -178,16 +183,27 @@ const ActiveFieldCard: React.FC<ActiveFieldCardProps> = ({ field, lang, onConfir
           }}
           disabled={!canConfirm}
           className={cn(
-            'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all',
+            'relative flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all',
             canConfirm
               ? 'bg-green-500 text-white hover:bg-green-600 shadow-md shadow-green-500/20 active:scale-95'
-              : 'bg-gray-100 text-gray-300 cursor-not-allowed'
+              : 'bg-gray-100 text-gray-300 cursor-not-allowed',
           )}
         >
-          <Check className="w-4 h-4" />
-          {l.confirm}
+          {/* Pulsing ring when field needs confirmation */}
+          {shouldPulse && (
+            <span className="absolute inset-0 rounded-xl animate-ping bg-green-400 opacity-30 pointer-events-none" />
+          )}
+          <Check className="w-4 h-4 relative" />
+          <span className="relative">{l.confirm}</span>
         </button>
       </div>
+
+      {/* Nudge text when field has value but needs confirmation */}
+      {shouldPulse && !editing && (
+        <p className="mt-3 text-center text-xs text-green-600 animate-pulse">
+          {lang === 'th' ? 'กดยืนยันเพื่อดำเนินการต่อ' : 'Press confirm to proceed'}
+        </p>
+      )}
     </div>
   );
 };

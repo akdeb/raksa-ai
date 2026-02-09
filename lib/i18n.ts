@@ -73,6 +73,10 @@ interface Labels {
   seconds: string;
   cancel: string;
 
+  // End call
+  endCallTitle: string;
+  endCallDesc: string;
+
   // Language
   selectLanguage: string;
   thai: string;
@@ -145,6 +149,9 @@ const th: Labels = {
   seconds: 'วินาที',
   cancel: 'ยกเลิก',
 
+  endCallTitle: 'ต้องการวางสายหรือไม่?',
+  endCallDesc: 'ข้อมูลที่กรอกแล้วจะถูกบันทึกไว้',
+
   selectLanguage: 'เลือกภาษา',
   thai: 'ไทย',
   english: 'English',
@@ -215,6 +222,9 @@ const en: Labels = {
   printingIn: 'Printing in',
   seconds: 's',
   cancel: 'Cancel',
+
+  endCallTitle: 'End this call?',
+  endCallDesc: 'Your progress has been saved.',
 
   selectLanguage: 'Select Language',
   thai: 'ไทย',
