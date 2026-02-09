@@ -57,12 +57,18 @@ const RaksaApp = () => {
   const [selectedLang, setSelectedLang] = useState<AppLang>('th');
   const [showTranscript, setShowTranscript] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [endCallDescOverride, setEndCallDescOverride] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<GeminiLiveModel | null>(null);
   const connectInFlightRef = useRef(false);
+  const connectionStateRef = useRef(connectionState);
+  const formRef = useRef<IntakeFormState>(form);
+  const followUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const silenceNudgesRef = useRef(0);
+  const lastSyncKeyRef = useRef<string>('');
 
   const lang = (form.lang ?? selectedLang) as Lang;
   const l = t(lang);
@@ -95,7 +101,12 @@ const RaksaApp = () => {
   // Persist form to localStorage on every change
   useEffect(() => {
     saveFormToStorage(form);
+    formRef.current = form;
   }, [form]);
+
+  useEffect(() => {
+    connectionStateRef.current = connectionState;
+  }, [connectionState]);
 
   // ─── Form mutations ───
 
@@ -216,6 +227,11 @@ const RaksaApp = () => {
   }, []);
 
   const handleReset = useCallback(() => {
+    if (followUpTimerRef.current) {
+      clearTimeout(followUpTimerRef.current);
+      followUpTimerRef.current = null;
+    }
+    silenceNudgesRef.current = 0;
     clearFormStorage();
     setForm(createDefaultForm());
     setMessages([]);
@@ -230,6 +246,11 @@ const RaksaApp = () => {
 
   const handleUiConfirm = useCallback(
     (fieldId: string) => {
+      silenceNudgesRef.current = 0;
+      if (followUpTimerRef.current) {
+        clearTimeout(followUpTimerRef.current);
+        followUpTimerRef.current = null;
+      }
       let label = fieldId;
       for (const g of form.groups) {
         const f = g.fields.find((f) => f.id === fieldId);
@@ -252,10 +273,67 @@ const RaksaApp = () => {
 
   const handleUiEdit = useCallback(
     (fieldId: string, value: string) => {
+      silenceNudgesRef.current = 0;
+      if (followUpTimerRef.current) {
+        clearTimeout(followUpTimerRef.current);
+        followUpTimerRef.current = null;
+      }
       updateField(fieldId, value, 'speech');
     },
     [updateField]
   );
+
+  const getActiveFieldContext = useCallback((state: IntakeFormState) => {
+    const group = state.groups.find((g) => g.id === state.step);
+    const field = group?.fields.find((f) => f.id === state.activeFieldId);
+    if (!field) {
+      return `step=${state.step}, no active field`;
+    }
+    return `step=${state.step}, field=${field.id}, label="${field.label}", value="${field.value}", status=${field.status}`;
+  }, []);
+
+  const clearFollowUpTimer = useCallback(() => {
+    if (followUpTimerRef.current) {
+      clearTimeout(followUpTimerRef.current);
+      followUpTimerRef.current = null;
+    }
+  }, []);
+
+  const markUserActivity = useCallback(() => {
+    silenceNudgesRef.current = 0;
+    clearFollowUpTimer();
+  }, [clearFollowUpTimer]);
+
+  const scheduleSilenceFollowUp = useCallback(() => {
+    clearFollowUpTimer();
+    if (!modelRef.current) return;
+    if (connectionStateRef.current !== ConnectionState.CONNECTED) return;
+    const currentForm = formRef.current;
+    if (currentForm.step === 'photo' || currentForm.step === 'receipt') return;
+
+    followUpTimerRef.current = setTimeout(() => {
+      if (!modelRef.current) return;
+      if (connectionStateRef.current !== ConnectionState.CONNECTED) return;
+
+      const latest = formRef.current;
+      if (latest.step === 'photo' || latest.step === 'receipt') return;
+
+      if (silenceNudgesRef.current >= 3) {
+        clearFollowUpTimer();
+        setEndCallDescOverride(
+          'No response detected. For safety and queue management, this session can be ended now. กรุณาเริ่มใหม่เมื่อพร้อม'
+        );
+        setShowEndConfirm(true);
+        return;
+      }
+
+      silenceNudgesRef.current += 1;
+      const context = getActiveFieldContext(latest);
+      modelRef.current.sendText(
+        `[SYSTEM] Follow-up required. The user has been silent for 5 seconds after your previous reply. Continue politely in the current conversation language and ask one concise follow-up question focused on: ${context}.`
+      );
+    }, 5000);
+  }, [clearFollowUpTimer, getActiveFieldContext]);
 
   // ─── Camera helpers ───
 
@@ -278,6 +356,7 @@ const RaksaApp = () => {
       setConnectionState(state);
       if (state === ConnectionState.DISCONNECTED) {
         stopCamera();
+        clearFollowUpTimer();
       }
     };
 
@@ -316,6 +395,13 @@ const RaksaApp = () => {
       role: 'user' | 'model',
       isFinal: boolean
     ) => {
+      if (role === 'user' && text.trim()) {
+        markUserActivity();
+      }
+      if (role === 'model' && isFinal) {
+        scheduleSilenceFollowUp();
+        return;
+      }
       if (isFinal) return;
       setMessages((prev) => {
         const history = [...prev];
@@ -340,15 +426,41 @@ const RaksaApp = () => {
     };
 
     return () => {
+      clearFollowUpTimer();
       model.disconnect();
       modelRef.current = null;
     };
-  }, [confirmField, mergeTranscriptChunk, moveToStep, updateField]);
+    // Intentionally mount once: recreating the model tears down active websocket/audio.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-scroll transcript (desktop)
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    if (!sessionStarted || connectionState !== ConnectionState.CONNECTED) return;
+    if (!modelRef.current) return;
+    if (form.step === 'photo' || form.step === 'receipt') {
+      clearFollowUpTimer();
+      return;
+    }
+
+    const syncKey = `${form.step}:${form.activeFieldId ?? 'none'}`;
+    if (syncKey === lastSyncKeyRef.current) return;
+    lastSyncKeyRef.current = syncKey;
+
+    modelRef.current.sendText(
+      `[SYSTEM] Form sync update. Focus only on this current target: ${getActiveFieldContext(form)}. Keep the conversation aligned to this state.`
+    );
+  }, [
+    clearFollowUpTimer,
+    connectionState,
+    form,
+    getActiveFieldContext,
+    sessionStarted,
+  ]);
 
   // ─── Connection ───
 
@@ -393,6 +505,7 @@ const RaksaApp = () => {
   // ─── Photo capture handlers ───
 
   const handlePhotoCapture = useCallback((base64: string) => {
+    markUserActivity();
     setForm((prev) => ({
       ...prev,
       userPhoto: base64,
@@ -406,9 +519,10 @@ const RaksaApp = () => {
         '[SYSTEM] A photo of the person has been taken. Analyze the photo and call update_field with source="image" for any personal details you can infer (e.g. gender, approximate age). Then start the personal details interview with the first unconfirmed field.'
       );
     }
-  }, []);
+  }, [markUserActivity]);
 
   const handlePhotoSkip = useCallback(() => {
+    markUserActivity();
     setForm((prev) => ({
       ...prev,
       step: 'personal',
@@ -417,7 +531,7 @@ const RaksaApp = () => {
     modelRef.current?.sendText(
       '[SYSTEM] User skipped photo capture. Continue immediately with personal details interview without any image-based inference. Ask for the first unconfirmed personal field now.'
     );
-  }, []);
+  }, [markUserActivity]);
 
   // ─── Camera (for inline during form) ───
 
@@ -440,6 +554,7 @@ const RaksaApp = () => {
 
   const handleCaptureImage = () => {
     if (!videoRef.current || !canvasRef.current || !modelRef.current) return;
+    markUserActivity();
     const context = canvasRef.current.getContext('2d');
     if (context) {
       canvasRef.current.width = videoRef.current.videoWidth;
@@ -589,7 +704,13 @@ const RaksaApp = () => {
             onSkip={handlePhotoSkip}
           />
         ) : form.step === 'receipt' ? (
-          <ReceiptPanel form={form} onReset={handleReset} />
+          <ReceiptPanel
+            form={form}
+            onReset={handleReset}
+            onPrintStart={() => {
+              void endSession();
+            }}
+          />
         ) : (
           <FormPanel
             form={form}
@@ -699,7 +820,10 @@ const RaksaApp = () => {
 
           {/* End Call */}
           <button
-            onClick={() => setShowEndConfirm(true)}
+            onClick={() => {
+              setEndCallDescOverride(null);
+              setShowEndConfirm(true);
+            }}
             className="w-10 h-10 bg-red-500 rounded-full flex items-center justify-center text-white hover:bg-red-600 transition-all hover:scale-105 active:scale-95 shadow-lg shadow-red-500/30 mr-1"
           >
             <PhoneOff className="w-5 h-5" />
@@ -712,7 +836,10 @@ const RaksaApp = () => {
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div className="relative bg-white rounded-2xl shadow-2xl max-w-xs w-full mx-4 p-6 text-center">
             <button
-              onClick={() => setShowEndConfirm(false)}
+              onClick={() => {
+                setShowEndConfirm(false);
+                setEndCallDescOverride(null);
+              }}
               className="absolute top-3 right-3 p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors"
             >
               <X className="w-4 h-4" />
@@ -722,11 +849,14 @@ const RaksaApp = () => {
               <PhoneOff className="w-6 h-6 text-red-500" />
             </div>
             <h3 className="text-lg font-bold text-gray-900 mb-1">{l.endCallTitle}</h3>
-            <p className="text-sm text-gray-400 mb-6">{l.endCallDesc}</p>
+            <p className="text-sm text-gray-400 mb-6">{endCallDescOverride ?? l.endCallDesc}</p>
 
             <div className="flex gap-3">
               <button
-                onClick={() => setShowEndConfirm(false)}
+                onClick={() => {
+                  setShowEndConfirm(false);
+                  setEndCallDescOverride(null);
+                }}
                 className="flex-1 py-2.5 px-4 rounded-xl border border-gray-200 text-gray-500 text-sm font-medium hover:bg-gray-50 transition-colors"
               >
                 {l.cancel}

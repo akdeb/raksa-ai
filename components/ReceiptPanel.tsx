@@ -6,9 +6,10 @@ import { Check, Printer, ArrowRight, X } from 'lucide-react';
 interface ReceiptPanelProps {
   form: IntakeFormState;
   onReset: () => void;
+  onPrintStart?: () => void;
 }
 
-const ReceiptPanel: React.FC<ReceiptPanelProps> = ({ form, onReset }) => {
+const ReceiptPanel: React.FC<ReceiptPanelProps> = ({ form, onReset, onPrintStart }) => {
   const lang = (form.lang ?? 'th') as Lang;
   const l = t(lang);
   const code = form.receiptCode ?? 'N/A';
@@ -52,7 +53,10 @@ const ReceiptPanel: React.FC<ReceiptPanelProps> = ({ form, onReset }) => {
 
         <div className="flex gap-3">
           <button
-            onClick={() => setShowPrintModal(true)}
+            onClick={() => {
+              onPrintStart?.();
+              setShowPrintModal(true);
+            }}
             className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-green-500 text-white text-sm font-semibold hover:bg-green-600 shadow-md shadow-green-500/20 transition-all active:scale-95"
           >
             <Printer className="w-4 h-4" />
