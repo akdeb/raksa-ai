@@ -67,6 +67,26 @@ const RaksaApp = () => {
   const lang = (form.lang ?? selectedLang) as Lang;
   const l = t(lang);
 
+  const shouldInsertSpace = useCallback((left: string, right: string) => {
+    if (!left || !right) return false;
+    const leftChar = left[left.length - 1];
+    const rightChar = right[0];
+    const leftIsWordLike = /[A-Za-z0-9]/.test(leftChar);
+    const rightIsWordLike = /[A-Za-z0-9]/.test(rightChar);
+    const leftEndsWithSpaceOrPunct = /[\s.,!?;:)\]"']/.test(leftChar);
+    if (!leftIsWordLike || !rightIsWordLike) return false;
+    return !leftEndsWithSpaceOrPunct;
+  }, []);
+
+  const mergeTranscriptChunk = useCallback(
+    (current: string, chunk: string) => {
+      if (!chunk) return current;
+      if (!current) return chunk;
+      return shouldInsertSpace(current, chunk) ? `${current} ${chunk}` : `${current}${chunk}`;
+    },
+    [shouldInsertSpace]
+  );
+
   // Check for resumable form on mount
   useEffect(() => {
     setHasResumable(hasSavedInProgressForm());
@@ -312,7 +332,7 @@ const RaksaApp = () => {
         } else {
           history[history.length - 1] = {
             ...lastMsg,
-            text: lastMsg.text + text,
+            text: mergeTranscriptChunk(lastMsg.text, text),
           };
         }
         return history;
@@ -323,8 +343,7 @@ const RaksaApp = () => {
       model.disconnect();
       modelRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [confirmField, mergeTranscriptChunk, moveToStep, updateField]);
 
   // Auto-scroll transcript (desktop)
   useEffect(() => {
@@ -395,6 +414,9 @@ const RaksaApp = () => {
       step: 'personal',
       activeFieldId: prev.groups[0]?.fields[0]?.id ?? null,
     }));
+    modelRef.current?.sendText(
+      '[SYSTEM] User skipped photo capture. Continue immediately with personal details interview without any image-based inference. Ask for the first unconfirmed personal field now.'
+    );
   }, []);
 
   // ─── Camera (for inline during form) ───
@@ -605,7 +627,7 @@ const RaksaApp = () => {
             {messages.length} {l.messages}
           </span>
         </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-3">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-3">
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-center">
               <div className="w-10 h-10 bg-red-50 rounded-full flex items-center justify-center mb-2 animate-pulse">
@@ -615,7 +637,7 @@ const RaksaApp = () => {
             </div>
           )}
           {messages.map((msg) => (
-            <div key={msg.id} className="text-xs leading-relaxed">
+            <div key={msg.id} className="text-xs leading-relaxed min-w-0">
               <span
                 className={
                   msg.role === 'user'
@@ -625,7 +647,9 @@ const RaksaApp = () => {
               >
                 {msg.role === 'user' ? 'You' : 'Raksa'}
               </span>
-              <p className="text-gray-500 mt-0.5">{msg.text}</p>
+              <p className="text-gray-500 mt-0.5 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                {msg.text}
+              </p>
             </div>
           ))}
           <div ref={messagesEndRef} />

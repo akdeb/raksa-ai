@@ -71,7 +71,7 @@ const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-[200px]">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4 min-h-[200px]">
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-center py-12">
               <div className="w-12 h-12 bg-red-50 rounded-full flex items-center justify-center mb-3 animate-pulse">
@@ -81,7 +81,7 @@ const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({
             </div>
           )}
           {messages.map((msg) => (
-            <div key={msg.id} className="text-sm leading-relaxed">
+            <div key={msg.id} className="text-sm leading-relaxed min-w-0">
               <span
                 className={
                   msg.role === 'user'
@@ -91,7 +91,9 @@ const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({
               >
                 {msg.role === 'user' ? 'You' : 'Raksa'}
               </span>
-              <p className="text-gray-500 mt-0.5">{msg.text}</p>
+              <p className="text-gray-500 mt-0.5 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                {msg.text}
+              </p>
             </div>
           ))}
           <div ref={endRef} />
