@@ -38,6 +38,7 @@ import {
   RotateCcw,
   X,
 } from 'lucide-react';
+import Image from 'next/image';
 
 // ─────────────────────────────────────────────
 // App
@@ -447,9 +448,7 @@ const RaksaApp = () => {
     return (
       <div className="h-full w-full bg-gradient-to-br from-gray-50 to-white flex flex-col items-center justify-center font-sans text-black px-4">
         <div className="text-center mb-10">
-          <h1 className="text-3xl md:text-4xl font-bold tracking-tight mb-1">
-            รักษา AI
-          </h1>
+          <Image src="/raksa.png" alt="Raksa AI" width={200} height={100} />
           <p className="text-sm text-gray-500">Raksa AI</p>
           <p className="text-gray-400 text-xs mt-1">{t('th').appSubtitle}</p>
           <p className="text-gray-400 text-xs">{t('en').appSubtitle}</p>
@@ -479,7 +478,7 @@ const RaksaApp = () => {
                   : 'bg-white text-gray-500 hover:bg-gray-50'
               }`}
             >
-              🇬🇧 English
+              🇺🇸 English
             </button>
           </div>
         </div>
