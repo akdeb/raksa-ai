@@ -67,8 +67,8 @@ const RaksaApp = () => {
   const connectionStateRef = useRef(connectionState);
   const formRef = useRef<IntakeFormState>(form);
   const followUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const endAfterFollowUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const silenceNudgesRef = useRef(0);
-  const lastSyncKeyRef = useRef<string>('');
 
   const lang = (form.lang ?? selectedLang) as Lang;
   const l = t(lang);
@@ -88,6 +88,34 @@ const RaksaApp = () => {
     (current: string, chunk: string) => {
       if (!chunk) return current;
       if (!current) return chunk;
+      const currentTrim = current.trim();
+      const chunkTrim = chunk.trim();
+
+      if (!chunkTrim) return current;
+      if (currentTrim === chunkTrim) return current;
+
+      // If chunk is cumulative and already contains current transcript, replace with chunk.
+      if (chunkTrim.startsWith(currentTrim)) {
+        return chunk;
+      }
+      // If chunk is fully contained, ignore to avoid duplicates.
+      if (currentTrim.includes(chunkTrim)) {
+        return current;
+      }
+
+      // Suffix/prefix overlap merge to avoid "What is ...?What is ...?" duplication.
+      const maxOverlap = Math.min(currentTrim.length, chunkTrim.length);
+      let overlap = 0;
+      for (let i = maxOverlap; i > 0; i--) {
+        if (currentTrim.slice(-i) === chunkTrim.slice(0, i)) {
+          overlap = i;
+          break;
+        }
+      }
+      if (overlap > 0) {
+        return `${current}${chunkTrim.slice(overlap)}`;
+      }
+
       return shouldInsertSpace(current, chunk) ? `${current} ${chunk}` : `${current}${chunk}`;
     },
     [shouldInsertSpace]
@@ -297,6 +325,10 @@ const RaksaApp = () => {
       clearTimeout(followUpTimerRef.current);
       followUpTimerRef.current = null;
     }
+    if (endAfterFollowUpTimerRef.current) {
+      clearTimeout(endAfterFollowUpTimerRef.current);
+      endAfterFollowUpTimerRef.current = null;
+    }
   }, []);
 
   const markUserActivity = useCallback(() => {
@@ -311,6 +343,10 @@ const RaksaApp = () => {
     const currentForm = formRef.current;
     if (currentForm.step === 'photo' || currentForm.step === 'receipt') return;
 
+    if (silenceNudgesRef.current >= 1) {
+      return;
+    }
+
     followUpTimerRef.current = setTimeout(() => {
       if (!modelRef.current) return;
       if (connectionStateRef.current !== ConnectionState.CONNECTED) return;
@@ -318,21 +354,26 @@ const RaksaApp = () => {
       const latest = formRef.current;
       if (latest.step === 'photo' || latest.step === 'receipt') return;
 
-      if (silenceNudgesRef.current >= 3) {
-        clearFollowUpTimer();
-        setEndCallDescOverride(
-          'No response detected. For safety and queue management, this session can be ended now. กรุณาเริ่มใหม่เมื่อพร้อม'
-        );
-        setShowEndConfirm(true);
-        return;
-      }
-
       silenceNudgesRef.current += 1;
       const context = getActiveFieldContext(latest);
       modelRef.current.sendText(
-        `[SYSTEM] Follow-up required. The user has been silent for 5 seconds after your previous reply. Continue politely in the current conversation language and ask one concise follow-up question focused on: ${context}.`
+        `[SYSTEM] Follow-up required. The user has been silent for 10 seconds after your previous reply. Continue politely in the current conversation language and ask one concise follow-up question focused on: ${context}.`
       );
-    }, 5000);
+
+      // Deterministic close path: if still no user activity in 10s, open end-call modal.
+      endAfterFollowUpTimerRef.current = setTimeout(() => {
+        if (connectionStateRef.current !== ConnectionState.CONNECTED) return;
+        const latest2 = formRef.current;
+        if (latest2.step === 'photo' || latest2.step === 'receipt') return;
+        if (silenceNudgesRef.current >= 1) {
+          clearFollowUpTimer();
+          setEndCallDescOverride(
+            'No response detected for an extended period. For safety and queue management, please end this session and restart when ready.'
+          );
+          setShowEndConfirm(true);
+        }
+      }, 10000);
+    }, 10000);
   }, [clearFollowUpTimer, getActiveFieldContext]);
 
   // ─── Camera helpers ───
@@ -440,27 +481,10 @@ const RaksaApp = () => {
   }, [messages]);
 
   useEffect(() => {
-    if (!sessionStarted || connectionState !== ConnectionState.CONNECTED) return;
-    if (!modelRef.current) return;
     if (form.step === 'photo' || form.step === 'receipt') {
       clearFollowUpTimer();
-      return;
     }
-
-    const syncKey = `${form.step}:${form.activeFieldId ?? 'none'}`;
-    if (syncKey === lastSyncKeyRef.current) return;
-    lastSyncKeyRef.current = syncKey;
-
-    modelRef.current.sendText(
-      `[SYSTEM] Form sync update. Focus only on this current target: ${getActiveFieldContext(form)}. Keep the conversation aligned to this state.`
-    );
-  }, [
-    clearFollowUpTimer,
-    connectionState,
-    form,
-    getActiveFieldContext,
-    sessionStarted,
-  ]);
+  }, [clearFollowUpTimer, form.step]);
 
   // ─── Connection ───
 
@@ -583,7 +607,7 @@ const RaksaApp = () => {
     connectionState !== ConnectionState.CONNECTING
   ) {
     return (
-      <div className="h-full w-full bg-gradient-to-br from-gray-50 to-white flex flex-col items-center justify-center font-sans text-black px-4">
+      <div className="h-full relative w-full bg-gradient-to-br from-gray-50 to-white flex flex-col items-center justify-center font-sans text-black px-4">
         <div className="text-center mb-10">
           <Image src="/raksa.png" alt="Raksa AI" width={200} height={100} />
           <p className="text-sm text-gray-500">Raksa AI</p>
@@ -592,7 +616,7 @@ const RaksaApp = () => {
         </div>
 
         {/* Language toggle */}
-        <div className="mb-8">
+        <div className="mb-8 absolute top-4 mx-auto">
           <p className="text-xs text-gray-400 text-center mb-2">
             {t(selectedLang).selectLanguage}
           </p>
